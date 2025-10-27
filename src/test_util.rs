@@ -805,6 +805,10 @@ pub(crate) const HIGH_5_2: &str =
 pub(crate) const HIGH_5_3: &str =
     "6f53d5175900d70b4821d1d0c947d0c47a802add0d620bfa72d57dd983dfc156";
 
+// 2 original ; 3 recovery ; 123 seed
+pub(crate) const HIGH_2_3: &str =
+    "19fb5ce2d7a3db95f819017cf49050eb8cd4b3c626cedf5ca13f6d2ab4eb43c4";
+
 // 3000 original ; 30000 recovery ; 14 seed ; shard_bytes = 64
 // NOTE: Chunk size is 4096, with partial chunk at end.
 pub(crate) const HIGH_3000_30000_14: &str =

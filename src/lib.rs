@@ -358,7 +358,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{engine::DefaultEngine, rate::DefaultRate};
+    use crate::{engine::DefaultEngine, rate::HighRate};
 
     // ============================================================
     // ROUNDTRIP
@@ -369,7 +369,7 @@ mod tests {
 
         let recovery = encode(2, 3, &original).unwrap();
 
-        test_util::assert_hash(&recovery, test_util::LOW_2_3);
+        test_util::assert_hash(&recovery, test_util::HIGH_2_3);
 
         let restored = decode(2, 3, [(0, ""); 0], [(0, &recovery[0]), (1, &recovery[1])]).unwrap();
 
@@ -387,7 +387,7 @@ mod tests {
         assert_send::<ReedSolomonEncoder>();
         assert_send::<ReedSolomonDecoder>();
         assert_send::<DefaultEngine>();
-        assert_send::<DefaultRate<DefaultEngine>>();
+        assert_send::<HighRate<DefaultEngine>>();
         assert_send::<DecoderResult>();
         assert_send::<EncoderResult>();
         assert_send::<Error>();
@@ -402,7 +402,7 @@ mod tests {
         assert_sync::<ReedSolomonEncoder>();
         assert_sync::<ReedSolomonDecoder>();
         assert_sync::<DefaultEngine>();
-        assert_sync::<DefaultRate<DefaultEngine>>();
+        assert_sync::<HighRate<DefaultEngine>>();
         assert_sync::<DecoderResult>();
         assert_sync::<EncoderResult>();
         assert_sync::<Error>();

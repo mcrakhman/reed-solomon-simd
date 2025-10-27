@@ -1,16 +1,16 @@
 use crate::{
     engine::DefaultEngine,
-    rate::{DefaultRate, DefaultRateDecoder, DefaultRateEncoder, Rate, RateDecoder, RateEncoder},
+    rate::{HighRate, HighRateDecoder, HighRateEncoder, Rate, RateDecoder, RateEncoder},
     DecoderResult, EncoderResult, Error,
 };
 
 // ======================================================================
 // ReedSolomonEncoder - PUBLIC
 
-/// Reed-Solomon encoder using [`DefaultEngine`] and [`DefaultRate`].
+/// Reed-Solomon encoder using [`DefaultEngine`] and [`HighRate`].
 ///
 /// [`DefaultEngine`]: crate::engine::DefaultEngine
-pub struct ReedSolomonEncoder(DefaultRateEncoder<DefaultEngine>);
+pub struct ReedSolomonEncoder(HighRateEncoder<DefaultEngine>);
 
 impl ReedSolomonEncoder {
     /// Adds one original shard to the encoder.
@@ -45,7 +45,7 @@ impl ReedSolomonEncoder {
         recovery_count: usize,
         shard_bytes: usize,
     ) -> Result<Self, Error> {
-        Ok(Self(DefaultRateEncoder::new(
+        Ok(Self(HighRateEncoder::new(
             original_count,
             recovery_count,
             shard_bytes,
@@ -80,17 +80,17 @@ impl ReedSolomonEncoder {
     /// assert_eq!(ReedSolomonEncoder::supports(60_000, 5_000), false);
     /// ```
     pub fn supports(original_count: usize, recovery_count: usize) -> bool {
-        DefaultRate::<DefaultEngine>::supports(original_count, recovery_count)
+        HighRate::<DefaultEngine>::supports(original_count, recovery_count)
     }
 }
 
 // ======================================================================
 // ReedSolomonDecoder - PUBLIC
 
-/// Reed-Solomon decoder using [`DefaultEngine`] and [`DefaultRate`].
+/// Reed-Solomon decoder using [`DefaultEngine`] and [`HighRate`].
 ///
 /// [`DefaultEngine`]: crate::engine::DefaultEngine
-pub struct ReedSolomonDecoder(DefaultRateDecoder<DefaultEngine>);
+pub struct ReedSolomonDecoder(HighRateDecoder<DefaultEngine>);
 
 impl ReedSolomonDecoder {
     /// Adds one original shard to the decoder.
@@ -143,7 +143,7 @@ impl ReedSolomonDecoder {
         recovery_count: usize,
         shard_bytes: usize,
     ) -> Result<Self, Error> {
-        Ok(Self(DefaultRateDecoder::new(
+        Ok(Self(HighRateDecoder::new(
             original_count,
             recovery_count,
             shard_bytes,
@@ -178,7 +178,7 @@ impl ReedSolomonDecoder {
     /// assert_eq!(ReedSolomonDecoder::supports(60_000, 5_000), false);
     /// ```
     pub fn supports(original_count: usize, recovery_count: usize) -> bool {
-        DefaultRate::<DefaultEngine>::supports(original_count, recovery_count)
+        HighRate::<DefaultEngine>::supports(original_count, recovery_count)
     }
 }
 
@@ -252,7 +252,7 @@ mod tests {
             &mut encoder,
             &mut decoder,
             2,
-            test_util::LOW_2_3,
+            test_util::HIGH_2_3,
             &[],
             &[0, 1],
             123,
@@ -277,10 +277,11 @@ mod tests {
 
     #[test]
     fn supports() {
-        assert!(ReedSolomonEncoder::supports(4096, 61440));
+        // HighRate supports (61440, 4096) but not (4096, 61440)
+        assert!(!ReedSolomonEncoder::supports(4096, 61440));
         assert!(ReedSolomonEncoder::supports(61440, 4096));
 
-        assert!(ReedSolomonDecoder::supports(4096, 61440));
+        assert!(!ReedSolomonDecoder::supports(4096, 61440));
         assert!(ReedSolomonDecoder::supports(61440, 4096));
     }
 }

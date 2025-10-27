@@ -134,7 +134,7 @@ mod tests {
         all.push(result.recovery(1).unwrap());
         all.push(result.recovery(2).unwrap());
         assert!(result.recovery(3).is_none());
-        test_util::assert_hash(all, test_util::LOW_2_3);
+        test_util::assert_hash(all, test_util::HIGH_2_3);
 
         let mut iter: Recovery = result.recovery_iter();
         let mut all = Vec::new();
@@ -142,7 +142,7 @@ mod tests {
         all.push(iter.next().unwrap());
         all.push(iter.next().unwrap());
         assert!(iter.next().is_none());
-        test_util::assert_hash(all, test_util::LOW_2_3);
+        test_util::assert_hash(all, test_util::HIGH_2_3);
     }
 
     #[test]
