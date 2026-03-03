@@ -1,12 +1,16 @@
 use core::iter::zip;
 
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, vec::Vec};
+
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
+use once_cell::race::OnceBox;
 
 use crate::engine::{
-    tables::{self, Mul128, Multiply128lutT, Skew},
+    tables::{self, Multiply128lutT, Skew},
     utils, Engine, GfElement, ShardsRefMut, GF_MODULUS, GF_ORDER,
 };
 
@@ -21,7 +25,7 @@ use crate::engine::{
 /// [`NoSimd`]: crate::engine::NoSimd
 #[derive(Clone, Copy)]
 pub struct Avx2 {
-    mul128: &'static Mul128,
+    mul128: &'static [LutAvx2],
     skew: &'static Skew,
 }
 
@@ -34,7 +38,7 @@ impl Avx2 {
     ///
     /// [`LogWalsh`]: crate::engine::tables::LogWalsh
     pub fn new() -> Self {
-        let mul128 = tables::get_mul128();
+        let mul128 = Self::get_mul128_avx2();
         let skew = tables::get_skew();
 
         Self { mul128, skew }
@@ -154,6 +158,21 @@ impl From<&Multiply128lutT> for LutAvx2 {
 
 impl Avx2 {
     #[target_feature(enable = "avx2")]
+    unsafe fn make_mul128_avx2() -> Box<[LutAvx2]> {
+        let mul128 = tables::get_mul128();
+        let mut out = Vec::with_capacity(mul128.len());
+        for lut in mul128.iter() {
+            out.push(LutAvx2::from(lut));
+        }
+        out.into_boxed_slice()
+    }
+
+    fn get_mul128_avx2() -> &'static [LutAvx2] {
+        static MUL128_AVX2: OnceBox<[LutAvx2]> = OnceBox::new();
+        MUL128_AVX2.get_or_init(|| unsafe { Self::make_mul128_avx2() })
+    }
+
+    #[target_feature(enable = "avx2")]
     unsafe fn xor_avx2(x: &mut [[u8; 64]], y: &[[u8; 64]]) {
         debug_assert_eq!(x.len(), y.len());
 
@@ -175,8 +194,7 @@ impl Avx2 {
 
     #[target_feature(enable = "avx2")]
     unsafe fn mul_avx2(&self, x: &mut [[u8; 64]], log_m: GfElement) {
-        let lut = &self.mul128[log_m as usize];
-        let lut_avx2 = LutAvx2::from(lut);
+        let lut_avx2 = &self.mul128[log_m as usize];
 
         for chunk in x.iter_mut() {
             let x_ptr = chunk.as_mut_ptr().cast::<__m256i>();
@@ -192,7 +210,7 @@ impl Avx2 {
 
     // Impelemntation of LEO_MUL_256
     #[inline(always)]
-    fn mul_256(value_lo: __m256i, value_hi: __m256i, lut_avx2: LutAvx2) -> (__m256i, __m256i) {
+    fn mul_256(value_lo: __m256i, value_hi: __m256i, lut_avx2: &LutAvx2) -> (__m256i, __m256i) {
         let mut prod_lo: __m256i;
         let mut prod_hi: __m256i;
 
@@ -227,7 +245,7 @@ impl Avx2 {
         mut x_hi: __m256i,
         y_lo: __m256i,
         y_hi: __m256i,
-        lut_avx2: LutAvx2,
+        lut_avx2: &LutAvx2,
     ) -> (__m256i, __m256i) {
         let (prod_lo, prod_hi) = Self::mul_256(y_lo, y_hi, lut_avx2);
         unsafe {
@@ -244,7 +262,7 @@ impl Avx2 {
         mut x_hi: __m256i,
         mut y_lo: __m256i,
         mut y_hi: __m256i,
-        lut_avx2: Option<LutAvx2>,
+        lut_avx2: Option<&LutAvx2>,
     ) -> (__m256i, __m256i, __m256i, __m256i) {
         if let Some(lut) = lut_avx2 {
             (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut);
@@ -263,7 +281,7 @@ impl Avx2 {
         mut x_hi: __m256i,
         mut y_lo: __m256i,
         mut y_hi: __m256i,
-        lut_avx2: Option<LutAvx2>,
+        lut_avx2: Option<&LutAvx2>,
     ) -> (__m256i, __m256i, __m256i, __m256i) {
         unsafe {
             y_lo = _mm256_xor_si256(y_lo, x_lo);
@@ -282,7 +300,7 @@ impl Avx2 {
 impl Avx2 {
     // Implementation of LEO_FFTB_256
     #[inline(always)]
-    fn fftb_256(x: &mut [u8; 64], y: &mut [u8; 64], lut_avx2: LutAvx2) {
+    fn fftb_256(x: &mut [u8; 64], y: &mut [u8; 64], lut_avx2: &LutAvx2) {
         let x_ptr = x.as_mut_ptr().cast::<__m256i>();
         let y_ptr = y.as_mut_ptr().cast::<__m256i>();
 
@@ -301,7 +319,7 @@ impl Avx2 {
     }
 
     #[inline(always)]
-    fn fft_butterfly_partial_lut(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut_avx2: LutAvx2) {
+    fn fft_butterfly_partial_lut(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut_avx2: &LutAvx2) {
         for (x_chunk, y_chunk) in zip(x.iter_mut(), y.iter_mut()) {
             Self::fftb_256(x_chunk, y_chunk, lut_avx2);
         }
@@ -310,8 +328,7 @@ impl Avx2 {
     // Partial butterfly, caller must do `GF_MODULUS` check with `xor`.
     #[inline(always)]
     fn fft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
-        let lut = &self.mul128[log_m as usize];
-        let lut_avx2 = LutAvx2::from(lut);
+        let lut_avx2 = &self.mul128[log_m as usize];
         Self::fft_butterfly_partial_lut(x, y, lut_avx2);
     }
 
@@ -320,9 +337,9 @@ impl Avx2 {
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        lut_m01: Option<LutAvx2>,
-        lut_m23: Option<LutAvx2>,
-        lut_m02: Option<LutAvx2>,
+        lut_m01: Option<&LutAvx2>,
+        lut_m23: Option<&LutAvx2>,
+        lut_m02: Option<&LutAvx2>,
     ) {
         let (s0, s1, s2, s3) = data.dist4_flat_mut(pos, dist);
         debug_assert_eq!(s0.len(), s1.len());
@@ -403,12 +420,9 @@ impl Avx2 {
                 let log_m02 = self.skew[base + dist];
                 let log_m23 = self.skew[base + dist * 2];
 
-                let lut_m01 =
-                    (log_m01 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m01 as usize]));
-                let lut_m02 =
-                    (log_m02 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m02 as usize]));
-                let lut_m23 =
-                    (log_m23 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m23 as usize]));
+                let lut_m01 = (log_m01 != GF_MODULUS).then_some(&self.mul128[log_m01 as usize]);
+                let lut_m02 = (log_m02 != GF_MODULUS).then_some(&self.mul128[log_m02 as usize]);
+                let lut_m23 = (log_m23 != GF_MODULUS).then_some(&self.mul128[log_m23 as usize]);
 
                 Self::fft_butterfly_two_layers_lut(data, pos + r, dist, lut_m01, lut_m23, lut_m02);
 
@@ -445,7 +459,7 @@ impl Avx2 {
 impl Avx2 {
     // Implementation of LEO_IFFTB_256
     #[inline(always)]
-    fn ifftb_256(x: &mut [u8; 64], y: &mut [u8; 64], lut_avx2: LutAvx2) {
+    fn ifftb_256(x: &mut [u8; 64], y: &mut [u8; 64], lut_avx2: &LutAvx2) {
         let x_ptr = x.as_mut_ptr().cast::<__m256i>();
         let y_ptr = y.as_mut_ptr().cast::<__m256i>();
 
@@ -464,7 +478,7 @@ impl Avx2 {
     }
 
     #[inline(always)]
-    fn ifft_butterfly_partial_lut(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut_avx2: LutAvx2) {
+    fn ifft_butterfly_partial_lut(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut_avx2: &LutAvx2) {
         for (x_chunk, y_chunk) in zip(x.iter_mut(), y.iter_mut()) {
             Self::ifftb_256(x_chunk, y_chunk, lut_avx2);
         }
@@ -472,8 +486,7 @@ impl Avx2 {
 
     #[inline(always)]
     fn ifft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
-        let lut = &self.mul128[log_m as usize];
-        let lut_avx2 = LutAvx2::from(lut);
+        let lut_avx2 = &self.mul128[log_m as usize];
         Self::ifft_butterfly_partial_lut(x, y, lut_avx2);
     }
 
@@ -482,9 +495,9 @@ impl Avx2 {
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        lut_m01: Option<LutAvx2>,
-        lut_m23: Option<LutAvx2>,
-        lut_m02: Option<LutAvx2>,
+        lut_m01: Option<&LutAvx2>,
+        lut_m23: Option<&LutAvx2>,
+        lut_m02: Option<&LutAvx2>,
     ) {
         let (s0, s1, s2, s3) = data.dist4_flat_mut(pos, dist);
         debug_assert_eq!(s0.len(), s1.len());
@@ -565,12 +578,9 @@ impl Avx2 {
                 let log_m02 = self.skew[base + dist];
                 let log_m23 = self.skew[base + dist * 2];
 
-                let lut_m01 =
-                    (log_m01 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m01 as usize]));
-                let lut_m02 =
-                    (log_m02 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m02 as usize]));
-                let lut_m23 =
-                    (log_m23 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m23 as usize]));
+                let lut_m01 = (log_m01 != GF_MODULUS).then_some(&self.mul128[log_m01 as usize]);
+                let lut_m02 = (log_m02 != GF_MODULUS).then_some(&self.mul128[log_m02 as usize]);
+                let lut_m23 = (log_m23 != GF_MODULUS).then_some(&self.mul128[log_m23 as usize]);
 
                 Self::ifft_butterfly_two_layers_lut(data, pos + r, dist, lut_m01, lut_m23, lut_m02);
 
