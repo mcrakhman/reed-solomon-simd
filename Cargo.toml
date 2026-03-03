@@ -20,6 +20,7 @@ include = [
 [dependencies]
 fixedbitset = { version = "0.5.7", default-features = false }
 once_cell = { version = "1.21.3", default-features = false, features = ["alloc", "race"] }
+rayon = { version = "1.11.0", optional = true }
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))'.dependencies]
 cpufeatures = "0.2.17"
@@ -42,7 +43,7 @@ leopard-codec = "0.2.0"
 
 [features]
 default = ["std"]
-std = ["fixedbitset/std"]
+std = ["fixedbitset/std", "dep:rayon"]
 
 [lib]
 bench = false

@@ -1,5 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
+#[cfg(feature = "std")]
+use rayon::prelude::*;
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
@@ -155,6 +157,11 @@ impl From<&Multiply128lutT> for LutAvx2 {
 }
 
 impl Avx2 {
+    #[cfg(feature = "std")]
+    const PAR_MIN_CHUNKS: usize = 1 << 16;
+    #[cfg(feature = "std")]
+    const PAR_BLOCK_CHUNKS: usize = 1 << 12;
+
     #[target_feature(enable = "avx2")]
     unsafe fn make_mul128_avx2() -> Vec<LutAvx2> {
         let mul128 = tables::get_mul128();
@@ -366,6 +373,68 @@ impl Avx2 {
         debug_assert_eq!(s0.len(), s1.len());
         debug_assert_eq!(s0.len(), s2.len());
         debug_assert_eq!(s0.len(), s3.len());
+
+        #[cfg(feature = "std")]
+        if s0.len() >= Self::PAR_MIN_CHUNKS {
+            s0.par_chunks_mut(Self::PAR_BLOCK_CHUNKS)
+                .zip(s1.par_chunks_mut(Self::PAR_BLOCK_CHUNKS))
+                .zip(s2.par_chunks_mut(Self::PAR_BLOCK_CHUNKS))
+                .zip(s3.par_chunks_mut(Self::PAR_BLOCK_CHUNKS))
+                .for_each(|(((s0, s1), s2), s3)| {
+                    debug_assert_eq!(s0.len(), s1.len());
+                    debug_assert_eq!(s0.len(), s2.len());
+                    debug_assert_eq!(s0.len(), s3.len());
+
+                    let len = s0.len();
+                    let mut s0_ptr = s0.as_mut_ptr();
+                    let mut s1_ptr = s1.as_mut_ptr();
+                    let mut s2_ptr = s2.as_mut_ptr();
+                    let mut s3_ptr = s3.as_mut_ptr();
+
+                    for _ in 0..len {
+                        unsafe {
+                            let p0 = (*s0_ptr).as_mut_ptr().cast::<__m256i>();
+                            let p1 = (*s1_ptr).as_mut_ptr().cast::<__m256i>();
+                            let p2 = (*s2_ptr).as_mut_ptr().cast::<__m256i>();
+                            let p3 = (*s3_ptr).as_mut_ptr().cast::<__m256i>();
+
+                            let mut s0_lo = _mm256_loadu_si256(p0);
+                            let mut s0_hi = _mm256_loadu_si256(p0.add(1));
+                            let mut s1_lo = _mm256_loadu_si256(p1);
+                            let mut s1_hi = _mm256_loadu_si256(p1.add(1));
+                            let mut s2_lo = _mm256_loadu_si256(p2);
+                            let mut s2_hi = _mm256_loadu_si256(p2.add(1));
+                            let mut s3_lo = _mm256_loadu_si256(p3);
+                            let mut s3_hi = _mm256_loadu_si256(p3.add(1));
+
+                            (s0_lo, s0_hi, s2_lo, s2_hi) =
+                                Self::fftb_256_reg::<MUL_M02>(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
+                            (s1_lo, s1_hi, s3_lo, s3_hi) =
+                                Self::fftb_256_reg::<MUL_M02>(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
+
+                            (s0_lo, s0_hi, s1_lo, s1_hi) =
+                                Self::fftb_256_reg::<MUL_M01>(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
+                            (s2_lo, s2_hi, s3_lo, s3_hi) =
+                                Self::fftb_256_reg::<MUL_M23>(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
+
+                            _mm256_storeu_si256(p0, s0_lo);
+                            _mm256_storeu_si256(p0.add(1), s0_hi);
+                            _mm256_storeu_si256(p1, s1_lo);
+                            _mm256_storeu_si256(p1.add(1), s1_hi);
+                            _mm256_storeu_si256(p2, s2_lo);
+                            _mm256_storeu_si256(p2.add(1), s2_hi);
+                            _mm256_storeu_si256(p3, s3_lo);
+                            _mm256_storeu_si256(p3.add(1), s3_hi);
+
+                            s0_ptr = s0_ptr.add(1);
+                            s1_ptr = s1_ptr.add(1);
+                            s2_ptr = s2_ptr.add(1);
+                            s3_ptr = s3_ptr.add(1);
+                        }
+                    }
+                });
+            return;
+        }
 
         // Fuse two FFT layers per chunk to reduce memory traffic.
         let len = s0.len();
@@ -609,6 +678,68 @@ impl Avx2 {
         debug_assert_eq!(s0.len(), s1.len());
         debug_assert_eq!(s0.len(), s2.len());
         debug_assert_eq!(s0.len(), s3.len());
+
+        #[cfg(feature = "std")]
+        if s0.len() >= Self::PAR_MIN_CHUNKS {
+            s0.par_chunks_mut(Self::PAR_BLOCK_CHUNKS)
+                .zip(s1.par_chunks_mut(Self::PAR_BLOCK_CHUNKS))
+                .zip(s2.par_chunks_mut(Self::PAR_BLOCK_CHUNKS))
+                .zip(s3.par_chunks_mut(Self::PAR_BLOCK_CHUNKS))
+                .for_each(|(((s0, s1), s2), s3)| {
+                    debug_assert_eq!(s0.len(), s1.len());
+                    debug_assert_eq!(s0.len(), s2.len());
+                    debug_assert_eq!(s0.len(), s3.len());
+
+                    let len = s0.len();
+                    let mut s0_ptr = s0.as_mut_ptr();
+                    let mut s1_ptr = s1.as_mut_ptr();
+                    let mut s2_ptr = s2.as_mut_ptr();
+                    let mut s3_ptr = s3.as_mut_ptr();
+
+                    for _ in 0..len {
+                        unsafe {
+                            let p0 = (*s0_ptr).as_mut_ptr().cast::<__m256i>();
+                            let p1 = (*s1_ptr).as_mut_ptr().cast::<__m256i>();
+                            let p2 = (*s2_ptr).as_mut_ptr().cast::<__m256i>();
+                            let p3 = (*s3_ptr).as_mut_ptr().cast::<__m256i>();
+
+                            let mut s0_lo = _mm256_loadu_si256(p0);
+                            let mut s0_hi = _mm256_loadu_si256(p0.add(1));
+                            let mut s1_lo = _mm256_loadu_si256(p1);
+                            let mut s1_hi = _mm256_loadu_si256(p1.add(1));
+                            let mut s2_lo = _mm256_loadu_si256(p2);
+                            let mut s2_hi = _mm256_loadu_si256(p2.add(1));
+                            let mut s3_lo = _mm256_loadu_si256(p3);
+                            let mut s3_hi = _mm256_loadu_si256(p3.add(1));
+
+                            (s0_lo, s0_hi, s1_lo, s1_hi) =
+                                Self::ifftb_256_reg::<MUL_M01>(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
+                            (s2_lo, s2_hi, s3_lo, s3_hi) =
+                                Self::ifftb_256_reg::<MUL_M23>(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
+
+                            (s0_lo, s0_hi, s2_lo, s2_hi) =
+                                Self::ifftb_256_reg::<MUL_M02>(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
+                            (s1_lo, s1_hi, s3_lo, s3_hi) =
+                                Self::ifftb_256_reg::<MUL_M02>(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
+
+                            _mm256_storeu_si256(p0, s0_lo);
+                            _mm256_storeu_si256(p0.add(1), s0_hi);
+                            _mm256_storeu_si256(p1, s1_lo);
+                            _mm256_storeu_si256(p1.add(1), s1_hi);
+                            _mm256_storeu_si256(p2, s2_lo);
+                            _mm256_storeu_si256(p2.add(1), s2_hi);
+                            _mm256_storeu_si256(p3, s3_lo);
+                            _mm256_storeu_si256(p3.add(1), s3_hi);
+
+                            s0_ptr = s0_ptr.add(1);
+                            s1_ptr = s1_ptr.add(1);
+                            s2_ptr = s2_ptr.add(1);
+                            s3_ptr = s3_ptr.add(1);
+                        }
+                    }
+                });
+            return;
+        }
 
         // Fuse two IFFT layers per chunk to reduce memory traffic.
         let len = s0.len();
