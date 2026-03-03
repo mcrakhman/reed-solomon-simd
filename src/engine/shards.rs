@@ -270,4 +270,28 @@ impl ShardsRefMut<'_> {
             (&mut tail[..count], &mut head[y..y + count])
         }
     }
+
+    // Returns mutable references to flat-arrays of shard-ranges
+    // `pos .. pos + dist`, `pos + dist .. pos + dist * 2`,
+    // `pos + dist * 2 .. pos + dist * 3`, `pos + dist * 3 .. pos + dist * 4`.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub(crate) fn dist4_flat_mut(
+        &mut self,
+        mut pos: usize,
+        mut dist: usize,
+    ) -> (
+        &mut [[u8; 64]],
+        &mut [[u8; 64]],
+        &mut [[u8; 64]],
+        &mut [[u8; 64]],
+    ) {
+        pos *= self.shard_len_64;
+        dist *= self.shard_len_64;
+
+        let (ab, cd) = self.data[pos..].split_at_mut(dist * 2);
+        let (a, b) = ab.split_at_mut(dist);
+        let (c, d) = cd.split_at_mut(dist);
+
+        (a, b, c, d)
+    }
 }

@@ -324,7 +324,7 @@ impl Avx2 {
         lut_m23: Option<LutAvx2>,
         lut_m02: Option<LutAvx2>,
     ) {
-        let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
+        let (s0, s1, s2, s3) = data.dist4_flat_mut(pos, dist);
         debug_assert_eq!(s0.len(), s1.len());
         debug_assert_eq!(s0.len(), s2.len());
         debug_assert_eq!(s0.len(), s3.len());
@@ -410,16 +410,7 @@ impl Avx2 {
                 let lut_m23 =
                     (log_m23 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m23 as usize]));
 
-                for i in r..r + dist {
-                    Self::fft_butterfly_two_layers_lut(
-                        data,
-                        pos + i,
-                        dist,
-                        lut_m01,
-                        lut_m23,
-                        lut_m02,
-                    );
-                }
+                Self::fft_butterfly_two_layers_lut(data, pos + r, dist, lut_m01, lut_m23, lut_m02);
 
                 r += dist4;
             }
@@ -495,7 +486,7 @@ impl Avx2 {
         lut_m23: Option<LutAvx2>,
         lut_m02: Option<LutAvx2>,
     ) {
-        let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
+        let (s0, s1, s2, s3) = data.dist4_flat_mut(pos, dist);
         debug_assert_eq!(s0.len(), s1.len());
         debug_assert_eq!(s0.len(), s2.len());
         debug_assert_eq!(s0.len(), s3.len());
@@ -581,16 +572,7 @@ impl Avx2 {
                 let lut_m23 =
                     (log_m23 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m23 as usize]));
 
-                for i in r..r + dist {
-                    Self::ifft_butterfly_two_layers_lut(
-                        data,
-                        pos + i,
-                        dist,
-                        lut_m01,
-                        lut_m23,
-                        lut_m02,
-                    );
-                }
+                Self::ifft_butterfly_two_layers_lut(data, pos + r, dist, lut_m01, lut_m23, lut_m02);
 
                 r += dist4;
             }
