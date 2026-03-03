@@ -74,6 +74,19 @@ impl Engine for Avx2 {
         }
     }
 
+    fn xor(&self, x: &mut [[u8; 64]], y: &[[u8; 64]]) {
+        unsafe {
+            Self::xor_avx2(x, y);
+        }
+    }
+
+    fn xor_within(&self, data: &mut ShardsRefMut, x: usize, y: usize, count: usize) {
+        let (xs, ys) = data.flat2_mut(x, y, count);
+        unsafe {
+            Self::xor_avx2(xs, ys);
+        }
+    }
+
     fn eval_poly(erasures: &mut [GfElement; GF_ORDER], truncated_size: usize) {
         unsafe { Self::eval_poly_avx2(erasures, truncated_size) }
     }
@@ -140,6 +153,26 @@ impl From<&Multiply128lutT> for LutAvx2 {
 }
 
 impl Avx2 {
+    #[target_feature(enable = "avx2")]
+    unsafe fn xor_avx2(x: &mut [[u8; 64]], y: &[[u8; 64]]) {
+        debug_assert_eq!(x.len(), y.len());
+
+        for (x_chunk, y_chunk) in zip(x.iter_mut(), y.iter()) {
+            let x_ptr = x_chunk.as_mut_ptr().cast::<__m256i>();
+            let y_ptr = y_chunk.as_ptr().cast::<__m256i>();
+
+            unsafe {
+                let x_lo = _mm256_loadu_si256(x_ptr);
+                let x_hi = _mm256_loadu_si256(x_ptr.add(1));
+                let y_lo = _mm256_loadu_si256(y_ptr);
+                let y_hi = _mm256_loadu_si256(y_ptr.add(1));
+
+                _mm256_storeu_si256(x_ptr, _mm256_xor_si256(x_lo, y_lo));
+                _mm256_storeu_si256(x_ptr.add(1), _mm256_xor_si256(x_hi, y_hi));
+            }
+        }
+    }
+
     #[target_feature(enable = "avx2")]
     unsafe fn mul_avx2(&self, x: &mut [[u8; 64]], log_m: GfElement) {
         let lut = &self.mul128[log_m as usize];
@@ -235,51 +268,60 @@ impl Avx2 {
         }
     }
 
-    // Partial butterfly, caller must do `GF_MODULUS` check with `xor`.
     #[inline(always)]
-    fn fft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
-        let lut = &self.mul128[log_m as usize];
-        let lut_avx2 = LutAvx2::from(lut);
-
+    fn fft_butterfly_partial_lut(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut_avx2: LutAvx2) {
         for (x_chunk, y_chunk) in zip(x.iter_mut(), y.iter_mut()) {
             Self::fftb_256(x_chunk, y_chunk, lut_avx2);
         }
     }
 
+    // Partial butterfly, caller must do `GF_MODULUS` check with `xor`.
     #[inline(always)]
-    fn fft_butterfly_two_layers(
-        &self,
+    fn fft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
+        let lut = &self.mul128[log_m as usize];
+        let lut_avx2 = LutAvx2::from(lut);
+        Self::fft_butterfly_partial_lut(x, y, lut_avx2);
+    }
+
+    #[inline(always)]
+    fn fft_butterfly_two_layers_lut(
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        log_m01: GfElement,
-        log_m23: GfElement,
-        log_m02: GfElement,
+        lut_m01: Option<LutAvx2>,
+        lut_m23: Option<LutAvx2>,
+        lut_m02: Option<LutAvx2>,
     ) {
         let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
 
         // FIRST LAYER
 
-        if log_m02 == GF_MODULUS {
-            utils::xor(s2, s0);
-            utils::xor(s3, s1);
+        if let Some(lut) = lut_m02 {
+            Self::fft_butterfly_partial_lut(s0, s2, lut);
+            Self::fft_butterfly_partial_lut(s1, s3, lut);
         } else {
-            self.fft_butterfly_partial(s0, s2, log_m02);
-            self.fft_butterfly_partial(s1, s3, log_m02);
+            unsafe {
+                Self::xor_avx2(s2, s0);
+                Self::xor_avx2(s3, s1);
+            }
         }
 
         // SECOND LAYER
 
-        if log_m01 == GF_MODULUS {
-            utils::xor(s1, s0);
+        if let Some(lut) = lut_m01 {
+            Self::fft_butterfly_partial_lut(s0, s1, lut);
         } else {
-            self.fft_butterfly_partial(s0, s1, log_m01);
+            unsafe {
+                Self::xor_avx2(s1, s0);
+            }
         }
 
-        if log_m23 == GF_MODULUS {
-            utils::xor(s3, s2);
+        if let Some(lut) = lut_m23 {
+            Self::fft_butterfly_partial_lut(s2, s3, lut);
         } else {
-            self.fft_butterfly_partial(s2, s3, log_m23);
+            unsafe {
+                Self::xor_avx2(s3, s2);
+            }
         }
     }
 
@@ -318,8 +360,22 @@ impl Avx2 {
                 let log_m02 = self.skew[base + dist];
                 let log_m23 = self.skew[base + dist * 2];
 
+                let lut_m01 =
+                    (log_m01 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m01 as usize]));
+                let lut_m02 =
+                    (log_m02 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m02 as usize]));
+                let lut_m23 =
+                    (log_m23 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m23 as usize]));
+
                 for i in r..r + dist {
-                    self.fft_butterfly_two_layers(data, pos + i, dist, log_m01, log_m23, log_m02);
+                    Self::fft_butterfly_two_layers_lut(
+                        data,
+                        pos + i,
+                        dist,
+                        lut_m01,
+                        lut_m23,
+                        lut_m02,
+                    );
                 }
 
                 r += dist4;
@@ -338,7 +394,7 @@ impl Avx2 {
                 let (x, y) = data.dist2_mut(pos + r, 1);
 
                 if log_m == GF_MODULUS {
-                    utils::xor(y, x);
+                    self.xor(y, x);
                 } else {
                     self.fft_butterfly_partial(x, y, log_m);
                 }
@@ -380,49 +436,58 @@ impl Avx2 {
     }
 
     #[inline(always)]
-    fn ifft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
-        let lut = &self.mul128[log_m as usize];
-        let lut_avx2 = LutAvx2::from(lut);
-
+    fn ifft_butterfly_partial_lut(x: &mut [[u8; 64]], y: &mut [[u8; 64]], lut_avx2: LutAvx2) {
         for (x_chunk, y_chunk) in zip(x.iter_mut(), y.iter_mut()) {
             Self::ifftb_256(x_chunk, y_chunk, lut_avx2);
         }
     }
 
     #[inline(always)]
-    fn ifft_butterfly_two_layers(
-        &self,
+    fn ifft_butterfly_partial(&self, x: &mut [[u8; 64]], y: &mut [[u8; 64]], log_m: GfElement) {
+        let lut = &self.mul128[log_m as usize];
+        let lut_avx2 = LutAvx2::from(lut);
+        Self::ifft_butterfly_partial_lut(x, y, lut_avx2);
+    }
+
+    #[inline(always)]
+    fn ifft_butterfly_two_layers_lut(
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        log_m01: GfElement,
-        log_m23: GfElement,
-        log_m02: GfElement,
+        lut_m01: Option<LutAvx2>,
+        lut_m23: Option<LutAvx2>,
+        lut_m02: Option<LutAvx2>,
     ) {
         let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
 
         // FIRST LAYER
 
-        if log_m01 == GF_MODULUS {
-            utils::xor(s1, s0);
+        if let Some(lut) = lut_m01 {
+            Self::ifft_butterfly_partial_lut(s0, s1, lut);
         } else {
-            self.ifft_butterfly_partial(s0, s1, log_m01);
+            unsafe {
+                Self::xor_avx2(s1, s0);
+            }
         }
 
-        if log_m23 == GF_MODULUS {
-            utils::xor(s3, s2);
+        if let Some(lut) = lut_m23 {
+            Self::ifft_butterfly_partial_lut(s2, s3, lut);
         } else {
-            self.ifft_butterfly_partial(s2, s3, log_m23);
+            unsafe {
+                Self::xor_avx2(s3, s2);
+            }
         }
 
         // SECOND LAYER
 
-        if log_m02 == GF_MODULUS {
-            utils::xor(s2, s0);
-            utils::xor(s3, s1);
+        if let Some(lut) = lut_m02 {
+            Self::ifft_butterfly_partial_lut(s0, s2, lut);
+            Self::ifft_butterfly_partial_lut(s1, s3, lut);
         } else {
-            self.ifft_butterfly_partial(s0, s2, log_m02);
-            self.ifft_butterfly_partial(s1, s3, log_m02);
+            unsafe {
+                Self::xor_avx2(s2, s0);
+                Self::xor_avx2(s3, s1);
+            }
         }
     }
 
@@ -461,8 +526,22 @@ impl Avx2 {
                 let log_m02 = self.skew[base + dist];
                 let log_m23 = self.skew[base + dist * 2];
 
+                let lut_m01 =
+                    (log_m01 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m01 as usize]));
+                let lut_m02 =
+                    (log_m02 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m02 as usize]));
+                let lut_m23 =
+                    (log_m23 != GF_MODULUS).then(|| LutAvx2::from(&self.mul128[log_m23 as usize]));
+
                 for i in r..r + dist {
-                    self.ifft_butterfly_two_layers(data, pos + i, dist, log_m01, log_m23, log_m02);
+                    Self::ifft_butterfly_two_layers_lut(
+                        data,
+                        pos + i,
+                        dist,
+                        lut_m01,
+                        lut_m23,
+                        lut_m02,
+                    );
                 }
 
                 r += dist4;
@@ -476,7 +555,7 @@ impl Avx2 {
         if dist < size {
             let log_m = self.skew[dist + skew_delta - 1];
             if log_m == GF_MODULUS {
-                utils::xor_within(data, pos + dist, pos, dist);
+                self.xor_within(data, pos + dist, pos, dist);
             } else {
                 let (mut a, mut b) = data.split_at_mut(pos + dist);
                 for i in 0..dist {

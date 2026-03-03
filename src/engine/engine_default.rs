@@ -90,6 +90,14 @@ impl Engine for DefaultEngine {
         self.0.mul(x, log_m);
     }
 
+    fn xor(&self, x: &mut [[u8; 64]], y: &[[u8; 64]]) {
+        self.0.xor(x, y);
+    }
+
+    fn xor_within(&self, data: &mut ShardsRefMut, x: usize, y: usize, count: usize) {
+        self.0.xor_within(data, x, y, count);
+    }
+
     fn eval_poly(erasures: &mut [GfElement; GF_ORDER], truncated_size: usize) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {

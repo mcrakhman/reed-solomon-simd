@@ -33,7 +33,7 @@
 //! [`rate`]: crate::rate
 
 pub(crate) use self::shards::Shards;
-pub(crate) use utils::{fft_skew_end, formal_derivative, ifft_skew_end, xor_within};
+pub(crate) use utils::{fft_skew_end, formal_derivative, ifft_skew_end};
 
 pub use self::{
     engine_default::DefaultEngine, engine_naive::Naive, engine_nosimd::NoSimd, shards::ShardsRefMut,
@@ -147,6 +147,16 @@ pub trait Engine {
 
     /// `x[] *= log_m`
     fn mul(&self, x: &mut [[u8; 64]], log_m: GfElement);
+
+    /// `x[] ^= y[]`
+    fn xor(&self, x: &mut [[u8; 64]], y: &[[u8; 64]]) {
+        utils::xor(x, y);
+    }
+
+    /// `data[x .. x + count] ^= data[y .. y + count]`
+    fn xor_within(&self, data: &mut ShardsRefMut, x: usize, y: usize, count: usize) {
+        utils::xor_within(data, x, y, count);
+    }
 
     // ============================================================
     // PROVIDED
