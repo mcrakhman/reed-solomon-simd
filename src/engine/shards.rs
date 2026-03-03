@@ -292,6 +292,6 @@ impl ShardsRefMut<'_> {
         let (a, b) = ab.split_at_mut(dist);
         let (c, d) = cd.split_at_mut(dist);
 
-        (a, b, c, d)
+        (a, b, c, &mut d[..dist])
     }
 }
