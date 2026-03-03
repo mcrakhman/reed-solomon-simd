@@ -158,18 +158,19 @@ impl From<&Multiply128lutT> for LutAvx2 {
 
 impl Avx2 {
     #[target_feature(enable = "avx2")]
-    unsafe fn make_mul128_avx2() -> Box<[LutAvx2]> {
+    unsafe fn make_mul128_avx2() -> Vec<LutAvx2> {
         let mul128 = tables::get_mul128();
         let mut out = Vec::with_capacity(mul128.len());
         for lut in mul128.iter() {
             out.push(LutAvx2::from(lut));
         }
-        out.into_boxed_slice()
+        out
     }
 
     fn get_mul128_avx2() -> &'static [LutAvx2] {
-        static MUL128_AVX2: OnceBox<[LutAvx2]> = OnceBox::new();
-        MUL128_AVX2.get_or_init(|| unsafe { Self::make_mul128_avx2() })
+        static MUL128_AVX2: OnceBox<Vec<LutAvx2>> = OnceBox::new();
+        let table = MUL128_AVX2.get_or_init(|| Box::new(unsafe { Self::make_mul128_avx2() }));
+        table.as_slice()
     }
 
     #[target_feature(enable = "avx2")]
