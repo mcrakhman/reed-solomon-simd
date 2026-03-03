@@ -2,6 +2,8 @@ use core::iter::zip;
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
+#[cfg(feature = "std")]
+use std::thread;
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;
@@ -351,6 +353,85 @@ impl Avx2 {
         debug_assert_eq!(s0.len(), s2.len());
         debug_assert_eq!(s0.len(), s3.len());
 
+        #[cfg(feature = "std")]
+        {
+            const PAR_MIN_CHUNKS: usize = 1 << 20;
+            let chunk_count = s0.len();
+            if chunk_count >= PAR_MIN_CHUNKS {
+                let workers = thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+                    .min(8);
+                if workers > 1 {
+                    let per_worker = chunk_count.div_ceil(workers);
+                    thread::scope(|scope| {
+                        let mut s0_rem = s0;
+                        let mut s1_rem = s1;
+                        let mut s2_rem = s2;
+                        let mut s3_rem = s3;
+                        let mut remaining = chunk_count;
+
+                        while remaining > 0 {
+                            let take = core::cmp::min(remaining, per_worker);
+                            let (s0_head, s0_tail) = s0_rem.split_at_mut(take);
+                            let (s1_head, s1_tail) = s1_rem.split_at_mut(take);
+                            let (s2_head, s2_tail) = s2_rem.split_at_mut(take);
+                            let (s3_head, s3_tail) = s3_rem.split_at_mut(take);
+                            s0_rem = s0_tail;
+                            s1_rem = s1_tail;
+                            s2_rem = s2_tail;
+                            s3_rem = s3_tail;
+                            remaining -= take;
+
+                            scope.spawn(move || {
+                                for i in 0..s0_head.len() {
+                                    let p0 = s0_head[i].as_mut_ptr().cast::<__m256i>();
+                                    let p1 = s1_head[i].as_mut_ptr().cast::<__m256i>();
+                                    let p2 = s2_head[i].as_mut_ptr().cast::<__m256i>();
+                                    let p3 = s3_head[i].as_mut_ptr().cast::<__m256i>();
+
+                                    unsafe {
+                                        let mut s0_lo = _mm256_loadu_si256(p0);
+                                        let mut s0_hi = _mm256_loadu_si256(p0.add(1));
+                                        let mut s1_lo = _mm256_loadu_si256(p1);
+                                        let mut s1_hi = _mm256_loadu_si256(p1.add(1));
+                                        let mut s2_lo = _mm256_loadu_si256(p2);
+                                        let mut s2_hi = _mm256_loadu_si256(p2.add(1));
+                                        let mut s3_lo = _mm256_loadu_si256(p3);
+                                        let mut s3_hi = _mm256_loadu_si256(p3.add(1));
+
+                                        (s0_lo, s0_hi, s2_lo, s2_hi) = Self::fftb_256_reg::<MUL_M02>(
+                                            s0_lo, s0_hi, s2_lo, s2_hi, lut_m02,
+                                        );
+                                        (s1_lo, s1_hi, s3_lo, s3_hi) = Self::fftb_256_reg::<MUL_M02>(
+                                            s1_lo, s1_hi, s3_lo, s3_hi, lut_m02,
+                                        );
+
+                                        (s0_lo, s0_hi, s1_lo, s1_hi) = Self::fftb_256_reg::<MUL_M01>(
+                                            s0_lo, s0_hi, s1_lo, s1_hi, lut_m01,
+                                        );
+                                        (s2_lo, s2_hi, s3_lo, s3_hi) = Self::fftb_256_reg::<MUL_M23>(
+                                            s2_lo, s2_hi, s3_lo, s3_hi, lut_m23,
+                                        );
+
+                                        _mm256_storeu_si256(p0, s0_lo);
+                                        _mm256_storeu_si256(p0.add(1), s0_hi);
+                                        _mm256_storeu_si256(p1, s1_lo);
+                                        _mm256_storeu_si256(p1.add(1), s1_hi);
+                                        _mm256_storeu_si256(p2, s2_lo);
+                                        _mm256_storeu_si256(p2.add(1), s2_hi);
+                                        _mm256_storeu_si256(p3, s3_lo);
+                                        _mm256_storeu_si256(p3.add(1), s3_hi);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    return;
+                }
+            }
+        }
+
         // Fuse two FFT layers per chunk to reduce memory traffic.
         for i in 0..s0.len() {
             let p0 = s0[i].as_mut_ptr().cast::<__m256i>();
@@ -573,6 +654,85 @@ impl Avx2 {
         debug_assert_eq!(s0.len(), s1.len());
         debug_assert_eq!(s0.len(), s2.len());
         debug_assert_eq!(s0.len(), s3.len());
+
+        #[cfg(feature = "std")]
+        {
+            const PAR_MIN_CHUNKS: usize = 1 << 20;
+            let chunk_count = s0.len();
+            if chunk_count >= PAR_MIN_CHUNKS {
+                let workers = thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+                    .min(8);
+                if workers > 1 {
+                    let per_worker = chunk_count.div_ceil(workers);
+                    thread::scope(|scope| {
+                        let mut s0_rem = s0;
+                        let mut s1_rem = s1;
+                        let mut s2_rem = s2;
+                        let mut s3_rem = s3;
+                        let mut remaining = chunk_count;
+
+                        while remaining > 0 {
+                            let take = core::cmp::min(remaining, per_worker);
+                            let (s0_head, s0_tail) = s0_rem.split_at_mut(take);
+                            let (s1_head, s1_tail) = s1_rem.split_at_mut(take);
+                            let (s2_head, s2_tail) = s2_rem.split_at_mut(take);
+                            let (s3_head, s3_tail) = s3_rem.split_at_mut(take);
+                            s0_rem = s0_tail;
+                            s1_rem = s1_tail;
+                            s2_rem = s2_tail;
+                            s3_rem = s3_tail;
+                            remaining -= take;
+
+                            scope.spawn(move || {
+                                for i in 0..s0_head.len() {
+                                    let p0 = s0_head[i].as_mut_ptr().cast::<__m256i>();
+                                    let p1 = s1_head[i].as_mut_ptr().cast::<__m256i>();
+                                    let p2 = s2_head[i].as_mut_ptr().cast::<__m256i>();
+                                    let p3 = s3_head[i].as_mut_ptr().cast::<__m256i>();
+
+                                    unsafe {
+                                        let mut s0_lo = _mm256_loadu_si256(p0);
+                                        let mut s0_hi = _mm256_loadu_si256(p0.add(1));
+                                        let mut s1_lo = _mm256_loadu_si256(p1);
+                                        let mut s1_hi = _mm256_loadu_si256(p1.add(1));
+                                        let mut s2_lo = _mm256_loadu_si256(p2);
+                                        let mut s2_hi = _mm256_loadu_si256(p2.add(1));
+                                        let mut s3_lo = _mm256_loadu_si256(p3);
+                                        let mut s3_hi = _mm256_loadu_si256(p3.add(1));
+
+                                        (s0_lo, s0_hi, s1_lo, s1_hi) = Self::ifftb_256_reg::<MUL_M01>(
+                                            s0_lo, s0_hi, s1_lo, s1_hi, lut_m01,
+                                        );
+                                        (s2_lo, s2_hi, s3_lo, s3_hi) = Self::ifftb_256_reg::<MUL_M23>(
+                                            s2_lo, s2_hi, s3_lo, s3_hi, lut_m23,
+                                        );
+
+                                        (s0_lo, s0_hi, s2_lo, s2_hi) = Self::ifftb_256_reg::<MUL_M02>(
+                                            s0_lo, s0_hi, s2_lo, s2_hi, lut_m02,
+                                        );
+                                        (s1_lo, s1_hi, s3_lo, s3_hi) = Self::ifftb_256_reg::<MUL_M02>(
+                                            s1_lo, s1_hi, s3_lo, s3_hi, lut_m02,
+                                        );
+
+                                        _mm256_storeu_si256(p0, s0_lo);
+                                        _mm256_storeu_si256(p0.add(1), s0_hi);
+                                        _mm256_storeu_si256(p1, s1_lo);
+                                        _mm256_storeu_si256(p1.add(1), s1_hi);
+                                        _mm256_storeu_si256(p2, s2_lo);
+                                        _mm256_storeu_si256(p2.add(1), s2_hi);
+                                        _mm256_storeu_si256(p3, s3_lo);
+                                        _mm256_storeu_si256(p3.add(1), s3_hi);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    return;
+                }
+            }
+        }
 
         // Fuse two IFFT layers per chunk to reduce memory traffic.
         for i in 0..s0.len() {
