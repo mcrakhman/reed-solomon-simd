@@ -236,6 +236,44 @@ impl Avx2 {
         }
         (x_lo, x_hi)
     }
+
+    // Implementation of LEO_FFTB_256 for register operands.
+    #[inline(always)]
+    fn fftb_256_reg(
+        mut x_lo: __m256i,
+        mut x_hi: __m256i,
+        mut y_lo: __m256i,
+        mut y_hi: __m256i,
+        lut_avx2: Option<LutAvx2>,
+    ) -> (__m256i, __m256i, __m256i, __m256i) {
+        if let Some(lut) = lut_avx2 {
+            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut);
+        }
+        unsafe {
+            y_lo = _mm256_xor_si256(y_lo, x_lo);
+            y_hi = _mm256_xor_si256(y_hi, x_hi);
+        }
+        (x_lo, x_hi, y_lo, y_hi)
+    }
+
+    // Implementation of LEO_IFFTB_256 for register operands.
+    #[inline(always)]
+    fn ifftb_256_reg(
+        mut x_lo: __m256i,
+        mut x_hi: __m256i,
+        mut y_lo: __m256i,
+        mut y_hi: __m256i,
+        lut_avx2: Option<LutAvx2>,
+    ) -> (__m256i, __m256i, __m256i, __m256i) {
+        unsafe {
+            y_lo = _mm256_xor_si256(y_lo, x_lo);
+            y_hi = _mm256_xor_si256(y_hi, x_hi);
+        }
+        if let Some(lut) = lut_avx2 {
+            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut);
+        }
+        (x_lo, x_hi, y_lo, y_hi)
+    }
 }
 
 // ======================================================================
@@ -249,20 +287,14 @@ impl Avx2 {
         let y_ptr = y.as_mut_ptr().cast::<__m256i>();
 
         unsafe {
-            let mut x_lo = _mm256_loadu_si256(x_ptr);
-            let mut x_hi = _mm256_loadu_si256(x_ptr.add(1));
-
-            let mut y_lo = _mm256_loadu_si256(y_ptr);
-            let mut y_hi = _mm256_loadu_si256(y_ptr.add(1));
-
-            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut_avx2);
-
+            let x_lo = _mm256_loadu_si256(x_ptr);
+            let x_hi = _mm256_loadu_si256(x_ptr.add(1));
+            let y_lo = _mm256_loadu_si256(y_ptr);
+            let y_hi = _mm256_loadu_si256(y_ptr.add(1));
+            let (x_lo, x_hi, y_lo, y_hi) =
+                Self::fftb_256_reg(x_lo, x_hi, y_lo, y_hi, Some(lut_avx2));
             _mm256_storeu_si256(x_ptr, x_lo);
             _mm256_storeu_si256(x_ptr.add(1), x_hi);
-
-            y_lo = _mm256_xor_si256(y_lo, x_lo);
-            y_hi = _mm256_xor_si256(y_hi, x_hi);
-
             _mm256_storeu_si256(y_ptr, y_lo);
             _mm256_storeu_si256(y_ptr.add(1), y_hi);
         }
@@ -293,34 +325,45 @@ impl Avx2 {
         lut_m02: Option<LutAvx2>,
     ) {
         let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
+        debug_assert_eq!(s0.len(), s1.len());
+        debug_assert_eq!(s0.len(), s2.len());
+        debug_assert_eq!(s0.len(), s3.len());
 
-        // FIRST LAYER
+        // Fuse two FFT layers per chunk to reduce memory traffic.
+        for i in 0..s0.len() {
+            let p0 = s0[i].as_mut_ptr().cast::<__m256i>();
+            let p1 = s1[i].as_mut_ptr().cast::<__m256i>();
+            let p2 = s2[i].as_mut_ptr().cast::<__m256i>();
+            let p3 = s3[i].as_mut_ptr().cast::<__m256i>();
 
-        if let Some(lut) = lut_m02 {
-            Self::fft_butterfly_partial_lut(s0, s2, lut);
-            Self::fft_butterfly_partial_lut(s1, s3, lut);
-        } else {
             unsafe {
-                Self::xor_avx2(s2, s0);
-                Self::xor_avx2(s3, s1);
-            }
-        }
+                let mut s0_lo = _mm256_loadu_si256(p0);
+                let mut s0_hi = _mm256_loadu_si256(p0.add(1));
+                let mut s1_lo = _mm256_loadu_si256(p1);
+                let mut s1_hi = _mm256_loadu_si256(p1.add(1));
+                let mut s2_lo = _mm256_loadu_si256(p2);
+                let mut s2_hi = _mm256_loadu_si256(p2.add(1));
+                let mut s3_lo = _mm256_loadu_si256(p3);
+                let mut s3_hi = _mm256_loadu_si256(p3.add(1));
 
-        // SECOND LAYER
+                (s0_lo, s0_hi, s2_lo, s2_hi) =
+                    Self::fftb_256_reg(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
+                (s1_lo, s1_hi, s3_lo, s3_hi) =
+                    Self::fftb_256_reg(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
 
-        if let Some(lut) = lut_m01 {
-            Self::fft_butterfly_partial_lut(s0, s1, lut);
-        } else {
-            unsafe {
-                Self::xor_avx2(s1, s0);
-            }
-        }
+                (s0_lo, s0_hi, s1_lo, s1_hi) =
+                    Self::fftb_256_reg(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
+                (s2_lo, s2_hi, s3_lo, s3_hi) =
+                    Self::fftb_256_reg(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
 
-        if let Some(lut) = lut_m23 {
-            Self::fft_butterfly_partial_lut(s2, s3, lut);
-        } else {
-            unsafe {
-                Self::xor_avx2(s3, s2);
+                _mm256_storeu_si256(p0, s0_lo);
+                _mm256_storeu_si256(p0.add(1), s0_hi);
+                _mm256_storeu_si256(p1, s1_lo);
+                _mm256_storeu_si256(p1.add(1), s1_hi);
+                _mm256_storeu_si256(p2, s2_lo);
+                _mm256_storeu_si256(p2.add(1), s2_hi);
+                _mm256_storeu_si256(p3, s3_lo);
+                _mm256_storeu_si256(p3.add(1), s3_hi);
             }
         }
     }
@@ -416,22 +459,16 @@ impl Avx2 {
         let y_ptr = y.as_mut_ptr().cast::<__m256i>();
 
         unsafe {
-            let mut x_lo = _mm256_loadu_si256(x_ptr);
-            let mut x_hi = _mm256_loadu_si256(x_ptr.add(1));
-
-            let mut y_lo = _mm256_loadu_si256(y_ptr);
-            let mut y_hi = _mm256_loadu_si256(y_ptr.add(1));
-
-            y_lo = _mm256_xor_si256(y_lo, x_lo);
-            y_hi = _mm256_xor_si256(y_hi, x_hi);
-
-            _mm256_storeu_si256(y_ptr, y_lo);
-            _mm256_storeu_si256(y_ptr.add(1), y_hi);
-
-            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut_avx2);
-
+            let x_lo = _mm256_loadu_si256(x_ptr);
+            let x_hi = _mm256_loadu_si256(x_ptr.add(1));
+            let y_lo = _mm256_loadu_si256(y_ptr);
+            let y_hi = _mm256_loadu_si256(y_ptr.add(1));
+            let (x_lo, x_hi, y_lo, y_hi) =
+                Self::ifftb_256_reg(x_lo, x_hi, y_lo, y_hi, Some(lut_avx2));
             _mm256_storeu_si256(x_ptr, x_lo);
             _mm256_storeu_si256(x_ptr.add(1), x_hi);
+            _mm256_storeu_si256(y_ptr, y_lo);
+            _mm256_storeu_si256(y_ptr.add(1), y_hi);
         }
     }
 
@@ -459,34 +496,45 @@ impl Avx2 {
         lut_m02: Option<LutAvx2>,
     ) {
         let (s0, s1, s2, s3) = data.dist4_mut(pos, dist);
+        debug_assert_eq!(s0.len(), s1.len());
+        debug_assert_eq!(s0.len(), s2.len());
+        debug_assert_eq!(s0.len(), s3.len());
 
-        // FIRST LAYER
+        // Fuse two IFFT layers per chunk to reduce memory traffic.
+        for i in 0..s0.len() {
+            let p0 = s0[i].as_mut_ptr().cast::<__m256i>();
+            let p1 = s1[i].as_mut_ptr().cast::<__m256i>();
+            let p2 = s2[i].as_mut_ptr().cast::<__m256i>();
+            let p3 = s3[i].as_mut_ptr().cast::<__m256i>();
 
-        if let Some(lut) = lut_m01 {
-            Self::ifft_butterfly_partial_lut(s0, s1, lut);
-        } else {
             unsafe {
-                Self::xor_avx2(s1, s0);
-            }
-        }
+                let mut s0_lo = _mm256_loadu_si256(p0);
+                let mut s0_hi = _mm256_loadu_si256(p0.add(1));
+                let mut s1_lo = _mm256_loadu_si256(p1);
+                let mut s1_hi = _mm256_loadu_si256(p1.add(1));
+                let mut s2_lo = _mm256_loadu_si256(p2);
+                let mut s2_hi = _mm256_loadu_si256(p2.add(1));
+                let mut s3_lo = _mm256_loadu_si256(p3);
+                let mut s3_hi = _mm256_loadu_si256(p3.add(1));
 
-        if let Some(lut) = lut_m23 {
-            Self::ifft_butterfly_partial_lut(s2, s3, lut);
-        } else {
-            unsafe {
-                Self::xor_avx2(s3, s2);
-            }
-        }
+                (s0_lo, s0_hi, s1_lo, s1_hi) =
+                    Self::ifftb_256_reg(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
+                (s2_lo, s2_hi, s3_lo, s3_hi) =
+                    Self::ifftb_256_reg(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
 
-        // SECOND LAYER
+                (s0_lo, s0_hi, s2_lo, s2_hi) =
+                    Self::ifftb_256_reg(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
+                (s1_lo, s1_hi, s3_lo, s3_hi) =
+                    Self::ifftb_256_reg(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
 
-        if let Some(lut) = lut_m02 {
-            Self::ifft_butterfly_partial_lut(s0, s2, lut);
-            Self::ifft_butterfly_partial_lut(s1, s3, lut);
-        } else {
-            unsafe {
-                Self::xor_avx2(s2, s0);
-                Self::xor_avx2(s3, s1);
+                _mm256_storeu_si256(p0, s0_lo);
+                _mm256_storeu_si256(p0.add(1), s0_hi);
+                _mm256_storeu_si256(p1, s1_lo);
+                _mm256_storeu_si256(p1.add(1), s1_hi);
+                _mm256_storeu_si256(p2, s2_lo);
+                _mm256_storeu_si256(p2.add(1), s2_hi);
+                _mm256_storeu_si256(p3, s3_lo);
+                _mm256_storeu_si256(p3.add(1), s3_hi);
             }
         }
     }
