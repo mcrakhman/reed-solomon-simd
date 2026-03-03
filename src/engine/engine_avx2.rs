@@ -258,15 +258,15 @@ impl Avx2 {
 
     // Implementation of LEO_FFTB_256 for register operands.
     #[inline(always)]
-    fn fftb_256_reg(
+    fn fftb_256_reg<const MUL: bool>(
         mut x_lo: __m256i,
         mut x_hi: __m256i,
         mut y_lo: __m256i,
         mut y_hi: __m256i,
-        lut_avx2: Option<&LutAvx2>,
+        lut_avx2: &LutAvx2,
     ) -> (__m256i, __m256i, __m256i, __m256i) {
-        if let Some(lut) = lut_avx2 {
-            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut);
+        if MUL {
+            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut_avx2);
         }
         unsafe {
             y_lo = _mm256_xor_si256(y_lo, x_lo);
@@ -277,19 +277,19 @@ impl Avx2 {
 
     // Implementation of LEO_IFFTB_256 for register operands.
     #[inline(always)]
-    fn ifftb_256_reg(
+    fn ifftb_256_reg<const MUL: bool>(
         mut x_lo: __m256i,
         mut x_hi: __m256i,
         mut y_lo: __m256i,
         mut y_hi: __m256i,
-        lut_avx2: Option<&LutAvx2>,
+        lut_avx2: &LutAvx2,
     ) -> (__m256i, __m256i, __m256i, __m256i) {
         unsafe {
             y_lo = _mm256_xor_si256(y_lo, x_lo);
             y_hi = _mm256_xor_si256(y_hi, x_hi);
         }
-        if let Some(lut) = lut_avx2 {
-            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut);
+        if MUL {
+            (x_lo, x_hi) = Self::muladd_256(x_lo, x_hi, y_lo, y_hi, lut_avx2);
         }
         (x_lo, x_hi, y_lo, y_hi)
     }
@@ -311,7 +311,7 @@ impl Avx2 {
             let y_lo = _mm256_loadu_si256(y_ptr);
             let y_hi = _mm256_loadu_si256(y_ptr.add(1));
             let (x_lo, x_hi, y_lo, y_hi) =
-                Self::fftb_256_reg(x_lo, x_hi, y_lo, y_hi, Some(lut_avx2));
+                Self::fftb_256_reg::<true>(x_lo, x_hi, y_lo, y_hi, lut_avx2);
             _mm256_storeu_si256(x_ptr, x_lo);
             _mm256_storeu_si256(x_ptr.add(1), x_hi);
             _mm256_storeu_si256(y_ptr, y_lo);
@@ -334,13 +334,17 @@ impl Avx2 {
     }
 
     #[inline(always)]
-    fn fft_butterfly_two_layers_lut(
+    fn fft_butterfly_two_layers_lut<
+        const MUL_M01: bool,
+        const MUL_M23: bool,
+        const MUL_M02: bool,
+    >(
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        lut_m01: Option<&LutAvx2>,
-        lut_m23: Option<&LutAvx2>,
-        lut_m02: Option<&LutAvx2>,
+        lut_m01: &LutAvx2,
+        lut_m23: &LutAvx2,
+        lut_m02: &LutAvx2,
     ) {
         let (s0, s1, s2, s3) = data.dist4_flat_mut(pos, dist);
         debug_assert_eq!(s0.len(), s1.len());
@@ -365,14 +369,14 @@ impl Avx2 {
                 let mut s3_hi = _mm256_loadu_si256(p3.add(1));
 
                 (s0_lo, s0_hi, s2_lo, s2_hi) =
-                    Self::fftb_256_reg(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
+                    Self::fftb_256_reg::<MUL_M02>(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
                 (s1_lo, s1_hi, s3_lo, s3_hi) =
-                    Self::fftb_256_reg(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
+                    Self::fftb_256_reg::<MUL_M02>(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
 
                 (s0_lo, s0_hi, s1_lo, s1_hi) =
-                    Self::fftb_256_reg(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
+                    Self::fftb_256_reg::<MUL_M01>(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
                 (s2_lo, s2_hi, s3_lo, s3_hi) =
-                    Self::fftb_256_reg(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
+                    Self::fftb_256_reg::<MUL_M23>(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
 
                 _mm256_storeu_si256(p0, s0_lo);
                 _mm256_storeu_si256(p0.add(1), s0_hi);
@@ -424,8 +428,69 @@ impl Avx2 {
                 let lut_m01 = (log_m01 != GF_MODULUS).then_some(&self.mul128[log_m01 as usize]);
                 let lut_m02 = (log_m02 != GF_MODULUS).then_some(&self.mul128[log_m02 as usize]);
                 let lut_m23 = (log_m23 != GF_MODULUS).then_some(&self.mul128[log_m23 as usize]);
+                let lut_id = &self.mul128[0];
 
-                Self::fft_butterfly_two_layers_lut(data, pos + r, dist, lut_m01, lut_m23, lut_m02);
+                match (lut_m01, lut_m23, lut_m02) {
+                    (Some(m01), Some(m23), Some(m02)) => Self::fft_butterfly_two_layers_lut::<
+                        true,
+                        true,
+                        true,
+                    >(
+                        data, pos + r, dist, m01, m23, m02
+                    ),
+                    (Some(m01), Some(m23), None) => Self::fft_butterfly_two_layers_lut::<
+                        true,
+                        true,
+                        false,
+                    >(
+                        data, pos + r, dist, m01, m23, lut_id
+                    ),
+                    (Some(m01), None, Some(m02)) => Self::fft_butterfly_two_layers_lut::<
+                        true,
+                        false,
+                        true,
+                    >(
+                        data, pos + r, dist, m01, lut_id, m02
+                    ),
+                    (Some(m01), None, None) => Self::fft_butterfly_two_layers_lut::<
+                        true,
+                        false,
+                        false,
+                    >(
+                        data, pos + r, dist, m01, lut_id, lut_id
+                    ),
+                    (None, Some(m23), Some(m02)) => Self::fft_butterfly_two_layers_lut::<
+                        false,
+                        true,
+                        true,
+                    >(
+                        data, pos + r, dist, lut_id, m23, m02
+                    ),
+                    (None, Some(m23), None) => Self::fft_butterfly_two_layers_lut::<
+                        false,
+                        true,
+                        false,
+                    >(
+                        data, pos + r, dist, lut_id, m23, lut_id
+                    ),
+                    (None, None, Some(m02)) => Self::fft_butterfly_two_layers_lut::<
+                        false,
+                        false,
+                        true,
+                    >(
+                        data, pos + r, dist, lut_id, lut_id, m02
+                    ),
+                    (None, None, None) => {
+                        Self::fft_butterfly_two_layers_lut::<false, false, false>(
+                            data,
+                            pos + r,
+                            dist,
+                            lut_id,
+                            lut_id,
+                            lut_id,
+                        )
+                    }
+                }
 
                 r += dist4;
             }
@@ -470,7 +535,7 @@ impl Avx2 {
             let y_lo = _mm256_loadu_si256(y_ptr);
             let y_hi = _mm256_loadu_si256(y_ptr.add(1));
             let (x_lo, x_hi, y_lo, y_hi) =
-                Self::ifftb_256_reg(x_lo, x_hi, y_lo, y_hi, Some(lut_avx2));
+                Self::ifftb_256_reg::<true>(x_lo, x_hi, y_lo, y_hi, lut_avx2);
             _mm256_storeu_si256(x_ptr, x_lo);
             _mm256_storeu_si256(x_ptr.add(1), x_hi);
             _mm256_storeu_si256(y_ptr, y_lo);
@@ -492,13 +557,17 @@ impl Avx2 {
     }
 
     #[inline(always)]
-    fn ifft_butterfly_two_layers_lut(
+    fn ifft_butterfly_two_layers_lut<
+        const MUL_M01: bool,
+        const MUL_M23: bool,
+        const MUL_M02: bool,
+    >(
         data: &mut ShardsRefMut,
         pos: usize,
         dist: usize,
-        lut_m01: Option<&LutAvx2>,
-        lut_m23: Option<&LutAvx2>,
-        lut_m02: Option<&LutAvx2>,
+        lut_m01: &LutAvx2,
+        lut_m23: &LutAvx2,
+        lut_m02: &LutAvx2,
     ) {
         let (s0, s1, s2, s3) = data.dist4_flat_mut(pos, dist);
         debug_assert_eq!(s0.len(), s1.len());
@@ -523,14 +592,14 @@ impl Avx2 {
                 let mut s3_hi = _mm256_loadu_si256(p3.add(1));
 
                 (s0_lo, s0_hi, s1_lo, s1_hi) =
-                    Self::ifftb_256_reg(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
+                    Self::ifftb_256_reg::<MUL_M01>(s0_lo, s0_hi, s1_lo, s1_hi, lut_m01);
                 (s2_lo, s2_hi, s3_lo, s3_hi) =
-                    Self::ifftb_256_reg(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
+                    Self::ifftb_256_reg::<MUL_M23>(s2_lo, s2_hi, s3_lo, s3_hi, lut_m23);
 
                 (s0_lo, s0_hi, s2_lo, s2_hi) =
-                    Self::ifftb_256_reg(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
+                    Self::ifftb_256_reg::<MUL_M02>(s0_lo, s0_hi, s2_lo, s2_hi, lut_m02);
                 (s1_lo, s1_hi, s3_lo, s3_hi) =
-                    Self::ifftb_256_reg(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
+                    Self::ifftb_256_reg::<MUL_M02>(s1_lo, s1_hi, s3_lo, s3_hi, lut_m02);
 
                 _mm256_storeu_si256(p0, s0_lo);
                 _mm256_storeu_si256(p0.add(1), s0_hi);
@@ -582,8 +651,69 @@ impl Avx2 {
                 let lut_m01 = (log_m01 != GF_MODULUS).then_some(&self.mul128[log_m01 as usize]);
                 let lut_m02 = (log_m02 != GF_MODULUS).then_some(&self.mul128[log_m02 as usize]);
                 let lut_m23 = (log_m23 != GF_MODULUS).then_some(&self.mul128[log_m23 as usize]);
+                let lut_id = &self.mul128[0];
 
-                Self::ifft_butterfly_two_layers_lut(data, pos + r, dist, lut_m01, lut_m23, lut_m02);
+                match (lut_m01, lut_m23, lut_m02) {
+                    (Some(m01), Some(m23), Some(m02)) => Self::ifft_butterfly_two_layers_lut::<
+                        true,
+                        true,
+                        true,
+                    >(
+                        data, pos + r, dist, m01, m23, m02
+                    ),
+                    (Some(m01), Some(m23), None) => Self::ifft_butterfly_two_layers_lut::<
+                        true,
+                        true,
+                        false,
+                    >(
+                        data, pos + r, dist, m01, m23, lut_id
+                    ),
+                    (Some(m01), None, Some(m02)) => Self::ifft_butterfly_two_layers_lut::<
+                        true,
+                        false,
+                        true,
+                    >(
+                        data, pos + r, dist, m01, lut_id, m02
+                    ),
+                    (Some(m01), None, None) => Self::ifft_butterfly_two_layers_lut::<
+                        true,
+                        false,
+                        false,
+                    >(
+                        data, pos + r, dist, m01, lut_id, lut_id
+                    ),
+                    (None, Some(m23), Some(m02)) => Self::ifft_butterfly_two_layers_lut::<
+                        false,
+                        true,
+                        true,
+                    >(
+                        data, pos + r, dist, lut_id, m23, m02
+                    ),
+                    (None, Some(m23), None) => Self::ifft_butterfly_two_layers_lut::<
+                        false,
+                        true,
+                        false,
+                    >(
+                        data, pos + r, dist, lut_id, m23, lut_id
+                    ),
+                    (None, None, Some(m02)) => Self::ifft_butterfly_two_layers_lut::<
+                        false,
+                        false,
+                        true,
+                    >(
+                        data, pos + r, dist, lut_id, lut_id, m02
+                    ),
+                    (None, None, None) => {
+                        Self::ifft_butterfly_two_layers_lut::<false, false, false>(
+                            data,
+                            pos + r,
+                            dist,
+                            lut_id,
+                            lut_id,
+                            lut_id,
+                        )
+                    }
+                }
 
                 r += dist4;
             }
